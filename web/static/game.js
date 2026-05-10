@@ -352,7 +352,7 @@
     if (!duel) return;
     const prevB = versusBot.lastBoard ? cloneBoard(versusBot.lastBoard) : null;
     const res = await fetch(
-      "/api/matches/" + encodeURIComponent(duel.match_id) + "/opponent-turn",
+      "/api/matches/" + encodeURIComponent(duel.matchId) + "/opponent-turn",
       { method: "POST" }
     );
     if (!res.ok) {
