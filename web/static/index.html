@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>2048 Race</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js" crossorigin="anonymous"></script>
+  </head>
+  <body>
+    <div class="page" id="app-page">
+      <header class="header">
+        <div>
+          <h1>2048 RACE!</h1>
+          <p class="tagline">Human play · duel a bot · arena two bots · Python backend</p>
+        </div>
+        <div class="toolbar">
+          <label class="mode-label"
+            >Mode
+            <select id="mode-select" aria-label="Play mode">
+              <option value="solo">Solo</option>
+              <option value="versus">You vs bot</option>
+              <option value="arena">Bot vs bot</option>
+            </select>
+          </label>
+        </div>
+      </header>
+
+      <datalist id="checkpoint-list"></datalist>
+
+      <!-- Solo -->
+      <section id="section-solo" class="panel">
+        <div class="toolbar toolbar--solo">
+          <label class="seed"
+            >Seed
+            <input id="seed" type="text" inputmode="numeric" placeholder="random" autocomplete="off" />
+          </label>
+          <button id="new-game" type="button">New game</button>
+        </div>
+
+        <div class="hud">
+          <div class="stat"><span class="label">Status</span> <span id="status-solo">…</span></div>
+          <div class="stat toast" id="toast-solo" aria-live="polite"></div>
+        </div>
+
+        <div class="board-wrap" id="board-wrap-solo">
+          <div id="grid-solo" class="grid" aria-label="Solo board"></div>
+        </div>
+
+        <div class="controls help">
+          <p>Use <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> or the buttons.</p>
+          <div class="dpad" id="dpad-solo">
+            <span></span>
+            <button type="button" class="dir" data-dir="up" aria-label="Up">↑</button>
+            <span></span>
+            <button type="button" class="dir" data-dir="left" aria-label="Left">←</button>
+            <button type="button" class="dir" data-dir="down" aria-label="Down">↓</button>
+            <button type="button" class="dir" data-dir="right" aria-label="Right">→</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Versus -->
+      <section id="section-versus" class="panel hidden">
+        <div class="demo-toolbar">
+          <label class="seed"
+            >Opponent
+            <select id="versus-opponent" aria-label="Opponent bot">
+              <option value="random">Random</option>
+              <option value="ordered">Ordered (↓←→↑)</option>
+              <option value="greedy">Greedy (empties)</option>
+              <option value="dqn">DQN (.pt)</option>
+            </select>
+          </label>
+          <label class="seed"
+            >checkpoint
+            <input
+              id="versus-checkpoint"
+              list="checkpoint-list"
+              type="text"
+              placeholder="dqn.pt"
+              autocomplete="off"
+            />
+          </label>
+          <label class="seed"
+            >Seed
+            <input id="versus-seed" type="text" inputmode="numeric" placeholder="random" />
+          </label>
+          <button id="versus-start" type="button">Start duel</button>
+        </div>
+        <p class="help-text">After each of your valid moves, the bot replies once (parallel boards).</p>
+
+        <div class="hud">
+          <div class="stat"><span class="label">You</span> <span id="status-versus-you">…</span></div>
+          <div class="stat"><span class="label">Bot</span> <span id="status-versus-bot">…</span></div>
+          <div class="stat toast" id="toast-versus" aria-live="polite"></div>
+        </div>
+
+        <div class="duel-row">
+          <div class="duel-pane">
+            <h2 class="pane-title">You</h2>
+            <div class="board-wrap duel-board" id="board-wrap-you">
+              <div id="grid-you" class="grid" aria-label="Your board"></div>
+            </div>
+            <div class="dpad" id="dpad-you">
+              <span></span>
+              <button type="button" class="dir dir-you" data-dir="up" aria-label="Up">↑</button>
+              <span></span>
+              <button type="button" class="dir dir-you" data-dir="left" aria-label="Left">←</button>
+              <button type="button" class="dir dir-you" data-dir="down" aria-label="Down">↓</button>
+              <button type="button" class="dir dir-you" data-dir="right" aria-label="Right">→</button>
+            </div>
+          </div>
+          <div class="duel-pane">
+            <h2 class="pane-title"><span id="versus-bot-title">Bot</span></h2>
+            <div class="board-wrap duel-board" id="board-wrap-bot">
+              <div id="grid-bot" class="grid" aria-label="Bot board"></div>
+            </div>
+            <button type="button" class="btn-soft" id="versus-step-bot-only">Advance bot once</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Arena -->
+      <section id="section-arena" class="panel hidden">
+        <div class="demo-toolbar">
+          <label class="seed"
+            >Left
+            <select id="arena-left"></select>
+          </label>
+          <label class="seed"
+            >Right
+            <select id="arena-right"></select>
+          </label>
+          <label class="seed"
+            >L ckpt
+            <input id="arena-left-ckpt" list="checkpoint-list" type="text" placeholder="dqn.pt" />
+          </label>
+          <label class="seed"
+            >R ckpt
+            <input id="arena-right-ckpt" list="checkpoint-list" type="text" placeholder="dqn.pt" />
+          </label>
+          <label class="seed"
+            >Seed
+            <input id="arena-seed" type="text" inputmode="numeric" placeholder="random" />
+          </label>
+          <button id="arena-start" type="button">Start arena</button>
+        </div>
+
+        <div class="hud">
+          <div class="stat"><span class="label">Left</span> <span id="status-arena-left">…</span></div>
+          <div class="stat"><span class="label">Right</span> <span id="status-arena-right">…</span></div>
+          <div class="stat toast" id="toast-arena" aria-live="polite"></div>
+        </div>
+
+        <div class="arena-actions">
+          <button type="button" id="arena-tick-left">Step left</button>
+          <button type="button" id="arena-tick-right">Step right</button>
+          <button type="button" id="arena-tick-both">Step both</button>
+          <button type="button" id="arena-auto">Auto until Win</button>
+        </div>
+        <p class="arena-auto-hint">
+          Runs both bots each turn until someone reaches the 2048 tile or both boards are stuck.
+          Click the button again to stop early.
+        </p>
+
+        <div class="duel-row">
+          <div class="duel-pane">
+            <h2 class="pane-title" id="arena-left-title">Left</h2>
+            <div class="board-wrap duel-board" id="board-wrap-arena-l">
+              <div id="grid-arena-l" class="grid"></div>
+            </div>
+          </div>
+          <div class="duel-pane">
+            <h2 class="pane-title" id="arena-right-title">Right</h2>
+            <div class="board-wrap duel-board" id="board-wrap-arena-r">
+              <div id="grid-arena-r" class="grid"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+    <script src="/static/game.js"></script>
+  </body>
+</html>
