@@ -63,3 +63,66 @@ def _obs_to_board(obs: np.ndarray) -> np.ndarray:
     mask = o > 0
     board[mask] = (2 ** o[mask]).astype(np.int32)
     return board
+
+class CornerHeuristicAgent:
+    """
+    Slightly smarter 2048 baseline.
+
+    It looks one move ahead and scores the resulting board using:
+    - number of empty cells
+    - max tile value
+    - whether the max tile is in a corner
+    - board smoothness
+    """
+
+    def act(self, obs: np.ndarray, info: dict) -> int:
+        mask: np.ndarray = info["legal_action_mask"]
+        board = _obs_to_board(obs)
+
+        best_action: int | None = None
+        best_score = -float("inf")
+
+        for a in range(4):
+            if not mask[a]:
+                continue
+
+            next_board = slide_board(board, a)
+            score = self._score_board(next_board)
+
+            if score > best_score:
+                best_score = score
+                best_action = a
+
+        assert best_action is not None
+        return int(best_action)
+
+    def _score_board(self, board: np.ndarray) -> float:
+        empty_cells = int(np.sum(board == 0))
+        max_tile = int(board.max())
+
+        corners = [
+            board[0, 0],
+            board[0, 3],
+            board[3, 0],
+            board[3, 3],
+        ]
+        max_in_corner = 1 if max_tile in corners else 0
+
+        # Smoothness: penalize big jumps between neighboring tiles
+        smoothness_penalty = 0.0
+        for r in range(4):
+            for c in range(4):
+                if board[r, c] == 0:
+                    continue
+                current = np.log2(board[r, c])
+                if r + 1 < 4 and board[r + 1, c] != 0:
+                    smoothness_penalty += abs(current - np.log2(board[r + 1, c]))
+                if c + 1 < 4 and board[r, c + 1] != 0:
+                    smoothness_penalty += abs(current - np.log2(board[r, c + 1]))
+
+        return (
+            10.0 * empty_cells
+            + 2.0 * np.log2(max(max_tile, 2))
+            + 15.0 * max_in_corner
+            - 1.0 * smoothness_penalty
+        )

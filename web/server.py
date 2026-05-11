@@ -183,7 +183,7 @@ def create_match(body: MatchCreate) -> MatchCreated:
         if not body.opponent:
             raise HTTPException(status_code=400, detail="versus requires opponent")
         opp = body.opponent.strip().lower()
-        allowed = {"random", "ordered", "greedy", "dqn"}
+        allowed = {"random", "ordered", "greedy", "corner", "dqn"}
         if opp not in allowed:
             raise HTTPException(status_code=400, detail=f"opponent must be one of {sorted(allowed)}")
         left_kind, right_kind = "human", opp
@@ -195,7 +195,7 @@ def create_match(body: MatchCreate) -> MatchCreated:
             raise HTTPException(status_code=400, detail="arena requires left and right")
         left_kind = body.left.strip().lower()
         right_kind = body.right.strip().lower()
-        allowed = {"random", "ordered", "greedy", "dqn"}
+        allowed = {"random", "ordered", "greedy", "corner", "dqn"}
         if left_kind not in allowed or right_kind not in allowed:
             raise HTTPException(status_code=400, detail=f"policies must be in {sorted(allowed)}")
         left_ckpt = _require_ckpt(left_kind, body.left_checkpoint) if left_kind == "dqn" else None

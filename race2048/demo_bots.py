@@ -7,12 +7,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from race2048.agents.baselines import GreedyEmptyAgent, OrderedAgent
+from race2048.agents.baselines import GreedyEmptyAgent, OrderedAgent, CornerHeuristicAgent
 from race2048.board import Game2048
-from race2048.dqn.qnet import QNetwork
+from race2048.dqn.agent import DQNAgent
 from race2048.env import encode_board_log2
 
-_DQN_NETS: dict[str, QNetwork] = {}
+_DQN_AGENTS: dict[str, DQNAgent] = {}
 
 
 def legal_mask_numpy(game: Game2048) -> np.ndarray:
@@ -33,7 +33,7 @@ def resolve_checkpoint_under(root: Path, rel: str | None, default_filename: str)
     checkpoints = (root / "checkpoints").resolve()
     checkpoints.mkdir(parents=True, exist_ok=True)
     name = (rel or default_filename).strip()
-    fname = Path(name).name  # disallow path traversal
+    fname = Path(name).name
     path = (checkpoints / fname).resolve()
     if not path.is_file():
         return None
@@ -45,19 +45,18 @@ def resolve_checkpoint_under(root: Path, rel: str | None, default_filename: str)
     return path
 
 
-def load_qnetwork(path: Path, device: torch.device) -> QNetwork:
+def load_dqn_agent(path: Path, device: torch.device) -> DQNAgent:
     key = str(path.resolve())
-    if key not in _DQN_NETS:
-        net = QNetwork().to(device)
-        try:
-            ckpt = torch.load(key, map_location=device, weights_only=False)
-        except TypeError:
-            ckpt = torch.load(key, map_location=device)
-        sd = ckpt["policy_state"] if isinstance(ckpt, dict) else ckpt
-        net.load_state_dict(sd)
-        net.eval()
-        _DQN_NETS[key] = net
-    return _DQN_NETS[key]
+    if key not in _DQN_AGENTS:
+        agent = DQNAgent()
+        agent.device = device
+        agent.policy_net = agent.policy_net.to(device)
+        agent.target_net = agent.target_net.to(device)
+        agent.load(path)
+        agent.policy_net.eval()
+        agent.target_net.eval()
+        _DQN_AGENTS[key] = agent
+    return _DQN_AGENTS[key]
 
 
 def pick_random_action(mask: np.ndarray, rng: np.random.Generator) -> int:
@@ -75,16 +74,26 @@ def pick_dqn_action(
     device: torch.device | None = None,
 ) -> int:
     dev = device or torch.device("cpu")
-    obs, info = _obs_and_info(game)
-    mask = info["legal_action_mask"]
+
+    mask = legal_mask_numpy(game)
     if not mask.any():
         return 0
-    net = load_qnetwork(checkpoint, dev)
-    x = torch.from_numpy(obs.astype(np.float32).reshape(-1)).unsqueeze(0).to(dev)
-    q = net(x).squeeze(0)
-    qb = torch.from_numpy(mask.astype(np.bool_)).to(dev)
-    q[~qb] = -float("inf")
-    return int(q.argmax().item())
+
+    agent = load_dqn_agent(checkpoint, dev)
+
+    action = int(
+    agent.select_action(
+        game.board,
+        training=False,
+        legal_actions=[int(a) for a in game.legal_actions()],
+    )
+    )
+
+    if not mask[action]:
+        legal = np.flatnonzero(mask)
+        return int(legal[0])
+
+    return action
 
 
 def pick_bot_action(
@@ -106,8 +115,11 @@ def pick_bot_action(
         return OrderedAgent().act(obs, info)
     if name == "greedy":
         return GreedyEmptyAgent().act(obs, info)
+    if name == "corner":
+        return CornerHeuristicAgent().act(obs, info)
     if name == "dqn":
         if checkpoint is None or not checkpoint.is_file():
             raise FileNotFoundError("DQN checkpoint missing or invalid")
         return pick_dqn_action(game, checkpoint, device=device)
+
     raise ValueError(f"unknown bot policy {policy!r}")

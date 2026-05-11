@@ -1,125 +1,132 @@
-"""DQN agent: ε-greedy exploration + periodic target-network sync."""
-
-from __future__ import annotations
-
-import random
-
-import numpy as np
 import torch
-import torch.nn.functional as F
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
 
-from race2048.dqn.buffer import ReplayBuffer
-from race2048.dqn.qnet import QNetwork
-
-
-def _flatten_obs(obs: np.ndarray) -> np.ndarray:
-    return np.asarray(obs, dtype=np.float32).reshape(-1)
+from race2048.dqn.network import DQN, board_to_tensor
+from race2048.dqn.replay_buffer import ReplayBuffer
 
 
 class DQNAgent:
-    """Deep Q-learning with a target network and experience replay."""
-
     def __init__(
         self,
-        *,
-        state_dim: int = 16,
-        action_dim: int = 4,
-        device: torch.device | str | None = None,
-        gamma: float = 0.99,
-        lr: float = 1e-4,
-        eps_start: float = 1.0,
-        eps_end: float = 0.05,
-        eps_decay_steps: int = 100_000,
-        target_update_every: int = 1000,
-        grad_clip: float | None = 10.0,
-    ) -> None:
-        self._device = torch.device(
-            device or ("cuda" if torch.cuda.is_available() else "cpu")
-        )
-        self._gamma = gamma
-        self._eps_start = eps_start
-        self._eps_end = eps_end
-        self._eps_decay_steps = max(1, eps_decay_steps)
-        self._target_update_every = target_update_every
-        self._grad_clip = grad_clip
+        learning_rate=0.0001,
+        gamma=0.99,
+        epsilon_start=1.0,
+        epsilon_end=0.05,
+        epsilon_decay=0.997,
+        replay_capacity=50000,
+        batch_size=64,
+        target_update_freq=250,
+    ):
+        self.device = torch.device("cpu")
 
-        self.policy_net = QNetwork(state_dim=state_dim, action_dim=action_dim).to(
-            self._device
-        )
-        self.target_net = QNetwork(state_dim=state_dim, action_dim=action_dim).to(
-            self._device
-        )
+        self.policy_net = DQN().to(self.device)
+        self.target_net = DQN().to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
-        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=lr)
-        self.train_steps = 0
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
+        self.memory = ReplayBuffer(capacity=replay_capacity)
 
-    def epsilon(self, global_step: int) -> float:
-        """Linear decay from eps_start to eps_end over eps_decay_steps."""
-        t = min(1.0, global_step / self._eps_decay_steps)
-        return self._eps_start + t * (self._eps_end - self._eps_start)
+        self.gamma = gamma
+        self.epsilon = epsilon_start
+        self.epsilon_end = epsilon_end
+        self.epsilon_decay = epsilon_decay
+        self.batch_size = batch_size
+        self.target_update_freq = target_update_freq
+        self.steps = 0
 
-    @torch.no_grad()
-    def select_action(
-        self,
-        obs: np.ndarray,
-        legal_mask: np.ndarray,
-        global_step: int,
-    ) -> int:
-        """ε-greedy among legal moves only."""
-        mask = np.asarray(legal_mask, dtype=np.bool_).reshape(4)
-        legal = np.flatnonzero(mask)
-        if legal.size == 0:
+    def select_action(self, board, training=True, legal_actions=None):
+        """
+        Epsilon-greedy action selection.
+
+        legal_actions is important for 2048 because invalid/no-op moves waste turns.
+        If legal_actions is provided, the agent only chooses among valid moves.
+        """
+        if legal_actions is None:
+            legal_actions = [0, 1, 2, 3]
+
+        legal_actions = list(legal_actions)
+        if len(legal_actions) == 0:
             return 0
-        eps = self.epsilon(global_step)
-        if random.random() < eps:
-            return int(random.choice(legal))
 
-        x = torch.from_numpy(_flatten_obs(obs)).unsqueeze(0).to(self._device)
-        self.policy_net.eval()
-        q = self.policy_net(x).squeeze(0).clone()
-        m = torch.from_numpy(mask).to(self._device)
-        q[~m] = -float("inf")
-        return int(q.argmax().item())
+        # Explore: random legal action
+        if training and np.random.random() < self.epsilon:
+            return int(np.random.choice(legal_actions))
 
-    def train_step(
-        self,
-        buffer: ReplayBuffer,
-        batch_size: int,
-    ) -> float | None:
-        """One gradient step. Returns loss or None if buffer too small."""
-        if len(buffer) < batch_size:
-            return None
-
-        self.policy_net.train()
-        states, actions, rewards, next_states, dones, next_masks = buffer.sample(
-            batch_size, self._device
-        )
-
-        q_sa = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        # Exploit: best Q-value among legal actions
+        state = board_to_tensor(board)
+        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            nq = self.target_net(next_states)
-            nq = nq.masked_fill(~next_masks, float("-inf"))
-            next_q = nq.max(1).values
-            targets = rewards + (1.0 - dones) * self._gamma * next_q
+            q_values = self.policy_net(state_tensor).squeeze(0)
 
-        loss = F.smooth_l1_loss(q_sa, targets)
-        self.optimizer.zero_grad(set_to_none=True)
+        mask = torch.full_like(q_values, -float("inf"))
+        mask[legal_actions] = 0.0
+        q_values = q_values + mask
+
+        return int(q_values.argmax().item())
+
+    def store_experience(self, state, action, reward, next_state, done):
+        state_enc = board_to_tensor(state)
+        next_state_enc = board_to_tensor(next_state)
+        self.memory.push(state_enc, action, reward, next_state_enc, done)
+
+    def train_step(self):
+        if len(self.memory) < self.batch_size:
+            return None
+
+        states, actions, rewards, next_states, dones = self.memory.sample(self.batch_size)
+
+        states = torch.FloatTensor(states).to(self.device)
+        actions = torch.LongTensor(actions).to(self.device)
+        rewards = torch.FloatTensor(rewards).to(self.device)
+        next_states = torch.FloatTensor(next_states).to(self.device)
+        dones = torch.FloatTensor(dones).to(self.device)
+
+        current_q = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+
+        with torch.no_grad():
+            next_q = self.target_net(next_states).max(1)[0]
+            target_q = rewards + (1 - dones) * self.gamma * next_q
+
+        # Huber loss is usually more stable than plain MSE for DQN
+        loss = nn.SmoothL1Loss()(current_q, target_q)
+
+        self.optimizer.zero_grad()
         loss.backward()
-        if self._grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(
-                self.policy_net.parameters(), self._grad_clip
-            )
+
+        # Prevent giant updates from destabilizing learning
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=10.0)
+
         self.optimizer.step()
 
-        self.train_steps += 1
-        if self.train_steps % self._target_update_every == 0:
+        self.steps += 1
+        if self.steps % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
 
-        return float(loss.item())
+        return loss.item()
 
-    def sync_target(self) -> None:
-        """Hard-copy weights to target network (e.g. end of episode)."""
-        self.target_net.load_state_dict(self.policy_net.state_dict())
+    def decay_epsilon(self):
+        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+
+    def save(self, path):
+        torch.save(
+            {
+                "policy_net": self.policy_net.state_dict(),
+                "target_net": self.target_net.state_dict(),
+                "optimizer": self.optimizer.state_dict(),
+                "epsilon": self.epsilon,
+                "steps": self.steps,
+            },
+            path,
+        )
+
+    def load(self, path):
+        checkpoint = torch.load(path, map_location=self.device)
+        self.policy_net.load_state_dict(checkpoint["policy_net"])
+        self.target_net.load_state_dict(checkpoint["target_net"])
+        self.optimizer.load_state_dict(checkpoint["optimizer"])
+        self.epsilon = checkpoint.get("epsilon", self.epsilon)
+        self.steps = checkpoint.get("steps", self.steps)
