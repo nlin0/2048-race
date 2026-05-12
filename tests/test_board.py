@@ -1,7 +1,15 @@
 import numpy as np
 import pytest
 
-from race2048.board import Action, Game2048, _merge_line_left, has_legal_move, slide_board
+from race2048.board import (
+    Action,
+    Game2048,
+    _merge_line_left,
+    _merge_line_left_scored,
+    has_legal_move,
+    merge_score_for_slide,
+    slide_board,
+)
 
 
 def test_merge_line_left_triple_twos():
@@ -12,6 +20,32 @@ def test_merge_line_left_triple_twos():
 def test_merge_line_left_four_twos():
     out = _merge_line_left(np.array([2, 2, 2, 2], dtype=np.int32))
     assert np.array_equal(out, np.array([4, 4, 0, 0], dtype=np.int32))
+
+
+def test_merge_line_left_scored_two_pairs():
+    line, s = _merge_line_left_scored(np.array([2, 2, 2, 2], dtype=np.int32))
+    assert np.array_equal(line, np.array([4, 4, 0, 0], dtype=np.int32))
+    assert s == 8  # classic 2048: 4 + 4
+
+
+def test_merge_score_for_slide_one_merge():
+    b = np.zeros((4, 4), dtype=np.int32)
+    b[0, 0] = 2
+    b[0, 1] = 2
+    assert merge_score_for_slide(b, Action.LEFT) == 4
+
+
+def test_merge_score_illegal_move_zero():
+    b = np.array(
+        [
+            [2, 4, 2, 4],
+            [4, 2, 4, 2],
+            [2, 4, 2, 4],
+            [4, 2, 4, 2],
+        ],
+        dtype=np.int32,
+    )
+    assert merge_score_for_slide(b, Action.LEFT) == 0
 
 
 def test_invalid_move_unchanged_state():

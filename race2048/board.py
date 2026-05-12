@@ -22,53 +22,94 @@ class StepResult(NamedTuple):
     won: bool
 
 
-def _merge_line_left(line: np.ndarray) -> np.ndarray:
-    """Slide non-zero tiles left and merge equal neighbors once per pair.
-
-    `line` is length 4. Classic 2048: [2, 2, 2, 0] -> [4, 2, 0, 0].
-    """
+def _merge_line_left_scored(line: np.ndarray) -> tuple[np.ndarray, int]:
+    """Slide + merge left; return new line and classic 2048 merge score (sum of merged tile values)."""
     tiles = [int(x) for x in line if x != 0]
     merged: list[int] = []
+    score = 0
     i = 0
     while i < len(tiles):
         if i + 1 < len(tiles) and tiles[i] == tiles[i + 1]:
-            merged.append(tiles[i] * 2)
+            v = tiles[i] * 2
+            merged.append(v)
+            score += v
             i += 2
         else:
             merged.append(tiles[i])
             i += 1
     while len(merged) < 4:
         merged.append(0)
-    return np.array(merged[:4], dtype=np.int32)
+    return np.array(merged[:4], dtype=np.int32), score
+
+
+def _merge_line_left(line: np.ndarray) -> np.ndarray:
+    """Slide non-zero tiles left and merge equal neighbors once per pair.
+
+    `line` is length 4. Classic 2048: [2, 2, 2, 0] -> [4, 2, 0, 0].
+    """
+    out, _ = _merge_line_left_scored(line)
+    return out
+
+
+def _move_left_scored(board: np.ndarray) -> tuple[np.ndarray, int]:
+    out = np.zeros((4, 4), dtype=np.int32)
+    total = 0
+    for r in range(4):
+        line, s = _merge_line_left_scored(board[r])
+        out[r] = line
+        total += s
+    return out, total
 
 
 def _move_left(board: np.ndarray) -> np.ndarray:
-    out = np.zeros((4, 4), dtype=np.int32)
-    for r in range(4):
-        out[r] = _merge_line_left(board[r])
+    out, _ = _move_left_scored(board)
     return out
+
+
+def _move_right_scored(board: np.ndarray) -> tuple[np.ndarray, int]:
+    out = np.zeros((4, 4), dtype=np.int32)
+    total = 0
+    for r in range(4):
+        line, s = _merge_line_left_scored(board[r, ::-1])
+        out[r] = line[::-1]
+        total += s
+    return out, total
 
 
 def _move_right(board: np.ndarray) -> np.ndarray:
-    out = np.zeros((4, 4), dtype=np.int32)
-    for r in range(4):
-        out[r] = _merge_line_left(board[r, ::-1])[::-1]
+    out, _ = _move_right_scored(board)
     return out
+
+
+def _move_up_scored(board: np.ndarray) -> tuple[np.ndarray, int]:
+    out = np.zeros((4, 4), dtype=np.int32)
+    total = 0
+    for c in range(4):
+        col = board[:, c]
+        line, s = _merge_line_left_scored(col)
+        out[:, c] = line
+        total += s
+    return out, total
 
 
 def _move_up(board: np.ndarray) -> np.ndarray:
-    out = np.zeros((4, 4), dtype=np.int32)
-    for c in range(4):
-        col = board[:, c]
-        out[:, c] = _merge_line_left(col)
+    out, _ = _move_up_scored(board)
     return out
 
 
-def _move_down(board: np.ndarray) -> np.ndarray:
+def _move_down_scored(board: np.ndarray) -> tuple[np.ndarray, int]:
     out = np.zeros((4, 4), dtype=np.int32)
+    total = 0
     for c in range(4):
         col = board[:, c]
-        out[:, c] = _merge_line_left(col[::-1])[::-1]
+        line, s = _merge_line_left_scored(col[::-1])
+        out[:, c] = line[::-1]
+        total += s
+    return out, total
+
+
+def _move_down(board: np.ndarray) -> np.ndarray:
+    out, _ = _move_down_scored(board)
     return out
 
 
@@ -82,6 +123,28 @@ def _apply_action(board: np.ndarray, action: Action) -> np.ndarray:
     if action == Action.DOWN:
         return _move_down(board)
     raise ValueError(f"Unknown action: {action}")
+
+
+def _apply_action_scored(board: np.ndarray, action: Action) -> tuple[np.ndarray, int]:
+    """Slide+merge only (no spawn); score is classic 2048 merge sum for that move."""
+    if action == Action.LEFT:
+        return _move_left_scored(board)
+    if action == Action.RIGHT:
+        return _move_right_scored(board)
+    if action == Action.UP:
+        return _move_up_scored(board)
+    if action == Action.DOWN:
+        return _move_down_scored(board)
+    raise ValueError(f"Unknown action: {action}")
+
+
+def merge_score_for_slide(board: np.ndarray, action: Action | int) -> int:
+    """Merge points for `action` on `board` before tile spawn; 0 if move does not change the grid."""
+    b = np.asarray(board, dtype=np.int32)
+    slid, score = _apply_action_scored(b, Action(action))
+    if np.array_equal(b, slid):
+        return 0
+    return int(score)
 
 
 def has_legal_move(board: np.ndarray) -> bool:

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, SupportsFloat, cast
 
 import numpy as np
 from gymnasium import Env, spaces
 
-from race2048.board import Game2048, StepResult
+from race2048.board import Game2048, StepResult, merge_score_for_slide
 
 # log2 view of the board: empty cells = 0, tile 2 -> 1, 4 -> 2, ..., 2048 -> 11
 _OBS_LOW = np.zeros((4, 4), dtype=np.float32)
@@ -35,6 +36,8 @@ class Game2048Env(Env):
         max_steps: int | None = 10_000,
         terminate_on_win: bool = False,
         invalid_move_penalty: float = 1.0,
+        step_cost: float = 0.005,
+        win_bonus: float = 50.0,
     ) -> None:
         super().__init__()
         self._seed = seed
@@ -42,6 +45,8 @@ class Game2048Env(Env):
         self._max_steps = max_steps
         self._terminate_on_win = terminate_on_win
         self._invalid_penalty = invalid_move_penalty
+        self._step_cost = step_cost
+        self._win_bonus = win_bonus
         self._game = Game2048(seed=self._rng.integers(0, 2**31 - 1))
         self.action_space = spaces.Discrete(4)
         self.observation_space = spaces.Box(
@@ -69,14 +74,23 @@ class Game2048Env(Env):
     def _encode_obs(self, board: np.ndarray) -> np.ndarray:
         return encode_board_log2(board)
 
-    def _reward_shaped(self, prev_max: int, res: StepResult) -> float:
+    def _reward_shaped(
+        self,
+        prev_max: int,
+        prev_board: np.ndarray,
+        action: int,
+        res: StepResult,
+    ) -> float:
         if not res.valid:
             return -self._invalid_penalty
+        merge_pts = merge_score_for_slide(prev_board, action)
         new_max = int(res.board.max())
         r = 0.0
-        if new_max > prev_max:
-            r += float(np.log2(new_max) - np.log2(max(prev_max, 2)))
-        r -= 0.01  # encourage shorter games for "speed to 2048"
+        if merge_pts > 0:
+            r += float(math.log2(merge_pts))
+        if new_max >= Game2048.WIN_TILE and prev_max < Game2048.WIN_TILE:
+            r += self._win_bonus
+        r -= self._step_cost
         return r
 
     def reset(
@@ -100,7 +114,10 @@ class Game2048Env(Env):
         prev_board = self._game.board.copy()
         res = self._game.step(action)
         obs = self._encode_obs(res.board)
-        reward = cast(SupportsFloat, self._reward_shaped(prev_max, res))
+        reward = cast(
+            SupportsFloat,
+            self._reward_shaped(prev_max, prev_board, action, res),
+        )
         terminated = res.game_over or (
             self._terminate_on_win and res.won and res.valid
         )

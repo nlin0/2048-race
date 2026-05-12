@@ -13,6 +13,18 @@ def test_reset_has_legal_mask():
     assert info["legal_action_mask"].shape == (4,)
 
 
+def test_merge_move_reward_has_merge_signal():
+    env = Game2048Env(seed=0)
+    env.reset(seed=0)
+    g = env.game
+    g._board[:] = 0
+    g._board[0, 0] = 2
+    g._board[0, 1] = 2
+    _obs, r, _term, _trunc, info = env.step(int(Action.LEFT))
+    assert info["valid"]
+    assert float(r) > 0.0
+
+
 def test_invalid_step_penalized():
     env = Game2048Env(seed=0, invalid_move_penalty=2.0)
     env.reset(seed=0)

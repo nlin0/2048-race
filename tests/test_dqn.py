@@ -40,11 +40,52 @@ def test_dqn_loss_step():
     assert loss >= 0.0
 
 
+def test_replay_q_stats():
+    agent = DQNAgent(device="cpu", target_update_every=10_000, eps_decay_steps=1)
+    buf = ReplayBuffer(5000)
+    for _ in range(300):
+        s = np.random.randn(16).astype(np.float32)
+        ns = np.random.randn(16).astype(np.float32)
+        buf.push(s, 0, 0.0, ns, False, np.ones(4, dtype=bool))
+    st = agent.replay_q_stats(buf, 64)
+    assert st is not None
+    assert "q_sa_mean" in st
+    assert "q_abs_max" in st
+    assert st["q_abs_max"] >= 0.0
+    assert agent.replay_q_stats(buf, 10_000) is None
+
+
 def test_epsilon_decays():
     a = DQNAgent(device="cpu", eps_start=1.0, eps_end=0.1, eps_decay_steps=100)
     assert a.epsilon(0) == pytest.approx(1.0)
     assert a.epsilon(100) == pytest.approx(0.1)
     assert a.epsilon(50) > a.epsilon(100)
+
+
+def test_select_action_zero_epsilon_only_legal():
+    """With ε=0, action must be argmax among legal entries."""
+    agent = DQNAgent(device="cpu", eps_decay_steps=100, eps_start=0.0, eps_end=0.0)
+    obs = np.zeros((4, 4), dtype=np.float32)
+    mask = np.array([False, True, False, False], dtype=np.bool_)
+    assert agent.select_action(obs, mask, 0) == 1
+    mask2 = np.array([True, True, False, False], dtype=np.bool_)
+    a = agent.select_action(obs, mask2, 0)
+    assert a in (0, 1)
+
+
+def test_policy_weights_change_with_training():
+    """Grad steps on a non-trivial batch should move policy parameters."""
+    agent = DQNAgent(device="cpu", target_update_every=10_000, eps_decay_steps=1)
+    buf = ReplayBuffer(5000)
+    for i in range(200):
+        s = np.random.randn(16).astype(np.float32)
+        ns = np.random.randn(16).astype(np.float32)
+        buf.push(s, i % 4, float(i % 10), ns, i % 40 == 0, np.ones(4, dtype=bool))
+    p0 = agent.policy_net.state_dict()["net.0.weight"].clone()
+    for _ in range(30):
+        agent.train_step(buf, 64)
+    p1 = agent.policy_net.state_dict()["net.0.weight"]
+    assert not torch.allclose(p0, p1, rtol=1e-4, atol=1e-5)
 
 
 def test_train_smoke_short():

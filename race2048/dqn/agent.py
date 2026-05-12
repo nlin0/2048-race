@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 
 import numpy as np
@@ -24,14 +25,16 @@ class DQNAgent:
         *,
         state_dim: int = 16,
         action_dim: int = 4,
+        hidden_dim: int = 256,
         device: torch.device | str | None = None,
         gamma: float = 0.99,
         lr: float = 1e-4,
         eps_start: float = 1.0,
-        eps_end: float = 0.05,
+        eps_end: float = 0.08,
         eps_decay_steps: int = 100_000,
         target_update_every: int = 1000,
         grad_clip: float | None = 10.0,
+        double_dqn: bool = True,
     ) -> None:
         self._device = torch.device(
             device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -42,13 +45,14 @@ class DQNAgent:
         self._eps_decay_steps = max(1, eps_decay_steps)
         self._target_update_every = target_update_every
         self._grad_clip = grad_clip
+        self._double_dqn = double_dqn
 
-        self.policy_net = QNetwork(state_dim=state_dim, action_dim=action_dim).to(
-            self._device
-        )
-        self.target_net = QNetwork(state_dim=state_dim, action_dim=action_dim).to(
-            self._device
-        )
+        self.policy_net = QNetwork(
+            state_dim=state_dim, action_dim=action_dim, hidden_dim=hidden_dim
+        ).to(self._device)
+        self.target_net = QNetwork(
+            state_dim=state_dim, action_dim=action_dim, hidden_dim=hidden_dim
+        ).to(self._device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
@@ -100,12 +104,26 @@ class DQNAgent:
         q_sa = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
         with torch.no_grad():
-            nq = self.target_net(next_states)
-            nq = nq.masked_fill(~next_masks, float("-inf"))
-            next_q = nq.max(1).values
+            if self._double_dqn:
+                pq = self.policy_net(next_states)
+                pq = pq.masked_fill(~next_masks, float("-inf"))
+                best = pq.argmax(1, keepdim=True)
+                nq = self.target_net(next_states)
+                next_q = nq.gather(1, best).squeeze(1)
+            else:
+                nq = self.target_net(next_states)
+                nq = nq.masked_fill(~next_masks, float("-inf"))
+                next_q = nq.max(1).values
+            # Game-over (or empty mask): no legal s'; avoid -inf max / bogus gather → inf/nan targets.
+            has_legal = next_masks.any(dim=1)
+            next_q = torch.where(has_legal, next_q, torch.zeros_like(next_q))
             targets = rewards + (1.0 - dones) * self._gamma * next_q
 
         loss = F.smooth_l1_loss(q_sa, targets)
+        loss_f = float(loss.item())
+        if not math.isfinite(loss_f):
+            return None
+
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         if self._grad_clip is not None:
@@ -118,7 +136,22 @@ class DQNAgent:
         if self.train_steps % self._target_update_every == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
 
-        return float(loss.item())
+        return loss_f
+
+    @torch.no_grad()
+    def replay_q_stats(
+        self, buffer: ReplayBuffer, batch_size: int
+    ) -> dict[str, float] | None:
+        """One-batch Q diagnostics for logging (optional)."""
+        if len(buffer) < batch_size:
+            return None
+        states, actions, _, _, _, _ = buffer.sample(batch_size, self._device)
+        self.policy_net.eval()
+        q_sa = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        return {
+            "q_sa_mean": float(q_sa.mean().item()),
+            "q_abs_max": float(q_sa.abs().max().item()),
+        }
 
     def sync_target(self) -> None:
         """Hard-copy weights to target network (e.g. end of episode)."""
