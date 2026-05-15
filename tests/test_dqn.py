@@ -14,6 +14,59 @@ def test_q_network_shape():
     assert y.shape == (32, 4)
 
 
+def test_q_network_deep_layernorm():
+    q = QNetwork(hidden_dim=64, num_hidden_layers=3, layer_norm=True)
+    y = q(torch.zeros(4, 16))
+    assert y.shape == (4, 4)
+
+
+def test_load_qnetwork_from_checkpoint_cnn(tmp_path):
+    from race2048.dqn.qnet import BoardCNNQNetwork, load_qnetwork_from_checkpoint
+
+    net = BoardCNNQNetwork()
+    ck = {"policy_state": net.state_dict(), "qnet_config": net.config_dict()}
+    path = tmp_path / "cnn.pt"
+    torch.save(ck, path)
+    loaded = torch.load(path, map_location="cpu", weights_only=False)
+    net2 = load_qnetwork_from_checkpoint(loaded, torch.device("cpu"))
+    assert net2.config_dict() == net.config_dict()
+    y = net2(torch.zeros(2, 16))
+    assert y.shape == (2, 4)
+
+
+def test_load_qnetwork_from_checkpoint_with_config(tmp_path):
+    from race2048.dqn.qnet import load_qnetwork_from_checkpoint
+
+    net = QNetwork(hidden_dim=32, num_hidden_layers=2, layer_norm=True)
+    ck = {
+        "policy_state": net.state_dict(),
+        "qnet_config": net.config_dict(),
+    }
+    path = tmp_path / "c.pt"
+    torch.save(ck, path)
+    loaded = torch.load(path, map_location="cpu", weights_only=False)
+    net2 = load_qnetwork_from_checkpoint(loaded, torch.device("cpu"))
+    assert net2.config_dict() == net.config_dict()
+
+
+def test_nstep_replay_accumulates():
+    from race2048.dqn.buffer import NStepReplayBuffer
+
+    buf = NStepReplayBuffer(1000, gamma=0.5, n=3)
+    z = np.zeros(16, dtype=np.float32)
+    o = np.ones(16, dtype=np.float32)
+    m = np.ones(4, dtype=bool)
+    buf.push(z, 0, 1.0, o, False, m)
+    buf.push(o, 1, 2.0, z, False, m)
+    assert len(buf) == 0
+    buf.push(z, 2, 4.0, o, True, m)
+    assert len(buf) == 1
+    dev = torch.device("cpu")
+    _s, _a, r, _ns, _d, _nm, boot = buf.sample(1, dev)
+    assert r.item() == pytest.approx(3.0)
+    assert boot.item() == pytest.approx(0.125)
+
+
 def test_replay_sample_device():
     buf = ReplayBuffer(1000)
     for i in range(200):
@@ -22,10 +75,12 @@ def test_replay_sample_device():
         mask = np.ones(4, dtype=bool)
         buf.push(s, i % 4, float(i), ns, i % 50 == 0, mask)
     dev = torch.device("cpu")
-    states, a, r, ns, d, nm = buf.sample(32, dev)
+    states, a, r, ns, d, nm, boot = buf.sample(32, dev)
     assert states.shape == (32, 16)
     assert nm.dtype == torch.bool
     assert nm.shape == (32, 4)
+    assert boot.shape == (32,)
+    assert torch.allclose(boot, torch.full_like(boot, 0.99))
 
 
 def test_dqn_loss_step():
@@ -62,6 +117,13 @@ def test_epsilon_decays():
     assert a.epsilon(50) > a.epsilon(100)
 
 
+def test_epsilon_offset_restarts_schedule():
+    a = DQNAgent(device="cpu", eps_start=1.0, eps_end=0.0, eps_decay_steps=100)
+    a.set_epsilon_offset(100)
+    assert a.epsilon(100) == pytest.approx(1.0)
+    assert a.epsilon(200) == pytest.approx(0.0)
+
+
 def test_select_action_zero_epsilon_only_legal():
     """With ε=0, action must be argmax among legal entries."""
     agent = DQNAgent(device="cpu", eps_decay_steps=100, eps_start=0.0, eps_end=0.0)
@@ -81,10 +143,10 @@ def test_policy_weights_change_with_training():
         s = np.random.randn(16).astype(np.float32)
         ns = np.random.randn(16).astype(np.float32)
         buf.push(s, i % 4, float(i % 10), ns, i % 40 == 0, np.ones(4, dtype=bool))
-    p0 = agent.policy_net.state_dict()["net.0.weight"].clone()
+    p0 = next(agent.policy_net.parameters()).detach().clone()
     for _ in range(30):
         agent.train_step(buf, 64)
-    p1 = agent.policy_net.state_dict()["net.0.weight"]
+    p1 = next(agent.policy_net.parameters())
     assert not torch.allclose(p0, p1, rtol=1e-4, atol=1e-5)
 
 

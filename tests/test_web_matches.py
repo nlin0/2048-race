@@ -25,6 +25,19 @@ def test_versus_random_match():
     assert s.status_code == 200
 
 
+def test_versus_dual_step_advances_both_boards():
+    c = TestClient(app)
+    r = c.post("/api/matches", json={"mode": "versus", "opponent": "greedy", "seed": 7})
+    assert r.status_code == 200
+    mid = r.json()["match_id"]
+    u = c.post(f"/api/matches/{mid}/versus-step", json={"action": "up"})
+    assert u.status_code == 200
+    pack = u.json()
+    assert pack["player"]["valid"] is True
+    assert pack["opponent"] is not None
+    assert pack["opponent"]["valid"] is True
+
+
 def test_arena_tick():
     c = TestClient(app)
     r = c.post(

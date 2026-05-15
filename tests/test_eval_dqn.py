@@ -20,7 +20,7 @@ def test_greedy_dqn_act_runs_episode(tmp_path: Path) -> None:
     net = QNetwork(hidden_dim=256)
     torch.save({"policy_state": net.state_dict()}, ck)
 
-    act = _greedy_dqn_act_fn(ck, device=torch.device("cpu"), hidden_dim=256)
+    act = _greedy_dqn_act_fn(ck, device=torch.device("cpu"))
     env = Game2048Env(seed=0, max_steps=200)
     obs, info = env.reset(seed=0)
     for _ in range(50):
@@ -36,7 +36,7 @@ def test_greedy_dqn_respects_legal_mask(tmp_path: Path) -> None:
     from race2048.dqn.qnet import QNetwork
 
     torch.save({"policy_state": QNetwork().state_dict()}, ck)
-    act = _greedy_dqn_act_fn(ck, device=torch.device("cpu"), hidden_dim=256)
+    act = _greedy_dqn_act_fn(ck, device=torch.device("cpu"))
     obs = np.zeros((4, 4), dtype=np.float32)
     info = {"legal_action_mask": np.array([True, False, False, False], dtype=np.bool_)}
     assert act(obs, info) == 0

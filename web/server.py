@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.requests import Request
 
 from race2048.board import Action, Game2048, has_legal_move, has_won
 from race2048.demo_bots import pick_bot_action, resolve_checkpoint_under
@@ -19,6 +20,11 @@ from race2048.demo_bots import pick_bot_action, resolve_checkpoint_under
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Default DQN weights under ``checkpoints/`` (basename only in API / UI).
+DEFAULT_DQN_VERSUS = "dqn_cnn_n3_1.pt"
+DEFAULT_DQN_ARENA_LEFT = "dqn_cnn_n3_1.pt"
+DEFAULT_DQN_ARENA_RIGHT = "dqn_2_1.pt"
 
 _ACTION_MAP: dict[str, Action] = {
     "up": Action.UP,
@@ -29,6 +35,16 @@ _ACTION_MAP: dict[str, Action] = {
 
 app = FastAPI(title="2048 Race UI")
 _GAMES: dict[str, Game2048] = {}
+
+
+@app.middleware("http")
+async def disable_static_cache(request: Request, call_next):
+    """Avoid stale CSS/JS during local dev (browsers cache /static aggressively)."""
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 def _snapshot(g: Game2048) -> dict:
@@ -77,6 +93,13 @@ class StepResponse(BaseModel):
     legal_actions: list[str]
 
 
+class VersusDualStepResponse(BaseModel):
+    """Human (left) step and bot reply when the human move was valid."""
+
+    player: StepResponse
+    opponent: StepResponse | None = None
+
+
 class MatchCreate(BaseModel):
     """Create a duel (human vs bot) or arena (bot vs bot) match."""
 
@@ -109,18 +132,23 @@ class TickBody(BaseModel):
     )
 
 
-def _maybe_ckpt(kind: str, rel: str | None, default_name: str = "dqn.pt") -> Path | None:
+def _maybe_ckpt(kind: str, rel: str | None, *, default_name: str) -> Path | None:
     if kind.lower() != "dqn":
         return None
     return resolve_checkpoint_under(REPO_ROOT, rel, default_name)
 
 
-def _require_ckpt(kind: str, rel: str | None) -> Path:
-    path = _maybe_ckpt(kind, rel)
+def _require_ckpt(kind: str, rel: str | None, *, default_name: str) -> Path:
+    rel_eff = (rel or default_name).strip() or default_name
+    basename = Path(rel_eff).name
+    path = _maybe_ckpt(kind, rel, default_name=default_name)
     if path is None or not path.is_file():
         raise HTTPException(
             status_code=400,
-            detail="DQN policy requires checkpoints/<name>.pt (place your weights in checkpoints/)",
+            detail=(
+                f'Missing weight file "{basename}". Add it under checkpoints/ '
+                f"(or CNN/checkpoints/, MLP/checkpoints/) at the repo root."
+            ),
         )
     return path
 
@@ -165,10 +193,17 @@ def get_state(game_id: str) -> dict:
 
 @app.get("/api/checkpoints")
 def list_checkpoints() -> dict:
-    ck = REPO_ROOT / "checkpoints"
-    ck.mkdir(parents=True, exist_ok=True)
-    files = sorted(p.name for p in ck.iterdir() if p.suffix.lower() == ".pt")
-    return {"checkpoints": files}
+    names: set[str] = set()
+    root_r = REPO_ROOT.resolve()
+    for rel in ("checkpoints", "CNN/checkpoints", "MLP/checkpoints"):
+        ck = (root_r / rel).resolve()
+        if not ck.is_dir():
+            continue
+        for p in ck.iterdir():
+            if p.suffix.lower() == ".pt":
+                names.add(p.name)
+    (root_r / "checkpoints").mkdir(parents=True, exist_ok=True)
+    return {"checkpoints": sorted(names)}
 
 
 @app.post("/api/matches", response_model=MatchCreated)
@@ -189,7 +224,7 @@ def create_match(body: MatchCreate) -> MatchCreated:
         left_kind, right_kind = "human", opp
         left_ckpt, right_ckpt = None, None
         if opp == "dqn":
-            right_ckpt = _require_ckpt("dqn", body.checkpoint)
+            right_ckpt = _require_ckpt("dqn", body.checkpoint, default_name=DEFAULT_DQN_VERSUS)
     else:
         if not body.left or not body.right:
             raise HTTPException(status_code=400, detail="arena requires left and right")
@@ -198,8 +233,16 @@ def create_match(body: MatchCreate) -> MatchCreated:
         allowed = {"random", "ordered", "greedy", "dqn"}
         if left_kind not in allowed or right_kind not in allowed:
             raise HTTPException(status_code=400, detail=f"policies must be in {sorted(allowed)}")
-        left_ckpt = _require_ckpt(left_kind, body.left_checkpoint) if left_kind == "dqn" else None
-        right_ckpt = _require_ckpt(right_kind, body.right_checkpoint) if right_kind == "dqn" else None
+        left_ckpt = (
+            _require_ckpt(left_kind, body.left_checkpoint, default_name=DEFAULT_DQN_ARENA_LEFT)
+            if left_kind == "dqn"
+            else None
+        )
+        right_ckpt = (
+            _require_ckpt(right_kind, body.right_checkpoint, default_name=DEFAULT_DQN_ARENA_RIGHT)
+            if right_kind == "dqn"
+            else None
+        )
 
     mid = str(uuid.uuid4())
     lid = str(uuid.uuid4())
@@ -276,6 +319,36 @@ def _run_bot_turn(game_id: str, m: DuelMatch, side: str) -> StepResponse:
     )
 
 
+@app.post("/api/matches/{match_id}/versus-step", response_model=VersusDualStepResponse)
+def versus_dual_step(match_id: str, body: StepRequest) -> VersusDualStepResponse:
+    """Apply the human move, then the bot reply, in one request (parallel boards)."""
+    m = _MATCHES.get(match_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="unknown match")
+    if m.mode != "versus":
+        raise HTTPException(status_code=400, detail="only versus matches support versus-step")
+    game = _GAMES.get(m.left_id)
+    if game is None:
+        raise HTTPException(status_code=404, detail="Unknown game id")
+
+    key = body.action.strip().lower()
+    if key not in _ACTION_MAP:
+        raise HTTPException(status_code=400, detail="action must be up, down, left, or right")
+
+    res = game.step(_ACTION_MAP[key])
+    player = StepResponse(
+        board=res.board.tolist(),
+        valid=res.valid,
+        game_over=res.game_over,
+        won=res.won,
+        legal_actions=[a.name.lower() for a in game.legal_actions()],
+    )
+    if not res.valid:
+        return VersusDualStepResponse(player=player, opponent=None)
+    opponent = _run_bot_turn(m.right_id, m, "right")
+    return VersusDualStepResponse(player=player, opponent=opponent)
+
+
 @app.post("/api/matches/{match_id}/opponent-turn", response_model=StepResponse)
 def opponent_turn(match_id: str) -> StepResponse:
     m = _MATCHES.get(match_id)
@@ -310,7 +383,13 @@ def tick_match(match_id: str, body: TickBody) -> dict:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

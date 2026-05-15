@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>2048 Race</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=4" />
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js" crossorigin="anonymous"></script>
   </head>
   <body>
@@ -17,16 +17,16 @@
         <div class="toolbar">
           <label class="mode-label"
             >Mode
-            <select id="mode-select" aria-label="Play mode">
-              <option value="solo">Solo</option>
-              <option value="versus">You vs bot</option>
-              <option value="arena">Bot vs bot</option>
-            </select>
+            <span class="arena-select-wrap arena-select-wrap--toolbar">
+              <select id="mode-select" class="arena-select" aria-label="Play mode">
+                <option value="solo">Solo</option>
+                <option value="versus">You vs bot</option>
+                <option value="arena">Bot vs bot</option>
+              </select>
+            </span>
           </label>
         </div>
       </header>
-
-      <datalist id="checkpoint-list"></datalist>
 
       <!-- Solo -->
       <section id="section-solo" class="panel">
@@ -65,22 +65,23 @@
         <div class="demo-toolbar">
           <label class="seed"
             >Opponent
-            <select id="versus-opponent" aria-label="Opponent bot">
+            <span class="arena-select-wrap arena-select-wrap--inline">
+              <select id="versus-opponent" class="arena-select" aria-label="Opponent bot">
               <option value="random">Random</option>
               <option value="ordered">Ordered (↓←→↑)</option>
               <option value="greedy">Greedy (empties)</option>
-              <option value="dqn">DQN (.pt)</option>
+              <option value="dqn">DQN</option>
             </select>
+            </span>
           </label>
-          <label class="seed"
-            >checkpoint
-            <input
-              id="versus-checkpoint"
-              list="checkpoint-list"
-              type="text"
-              placeholder="dqn.pt"
-              autocomplete="off"
-            />
+          <label id="versus-model-wrap" class="seed hidden" aria-live="polite"
+            >Model
+            <span class="arena-select-wrap arena-select-wrap--inline">
+              <select id="versus-dqn-model" class="arena-select" aria-label="DQN opponent model">
+              <option value="dqn_cnn_n3_1.pt">CNN</option>
+              <option value="dqn_2_1.pt">MLP</option>
+            </select>
+            </span>
           </label>
           <label class="seed"
             >Seed
@@ -88,7 +89,12 @@
           </label>
           <button id="versus-start" type="button">Start duel</button>
         </div>
-        <p class="help-text">After each of your valid moves, the bot replies once (parallel boards).</p>
+        <p class="help-text">
+          After each of your valid moves, the bot replies once (parallel boards).
+          <strong>Random</strong>, <strong>ordered</strong>, and <strong>greedy</strong> need no weight file.
+          For <strong>DQN</strong>, pick <strong>CNN</strong> or <strong>MLP</strong>; weights resolve from
+          <code>checkpoints/</code>, then <code>CNN/checkpoints/</code> or <code>MLP/checkpoints/</code>.
+        </p>
 
         <div class="hud">
           <div class="stat"><span class="label">You</span> <span id="status-versus-you">…</span></div>
@@ -123,28 +129,58 @@
 
       <!-- Arena -->
       <section id="section-arena" class="panel hidden">
-        <div class="demo-toolbar">
-          <label class="seed"
-            >Left
-            <select id="arena-left"></select>
+        <div class="arena-setup-grid">
+          <fieldset class="arena-card arena-card--left">
+            <legend class="arena-card__legend">Left lane</legend>
+            <label class="arena-field">
+              <span class="arena-field__label">Strategy</span>
+              <span class="arena-select-wrap">
+                <select id="arena-left" class="arena-select" aria-label="Left lane strategy"></select>
+              </span>
+            </label>
+            <div id="arena-left-model-wrap" class="arena-field arena-model-wrap hidden">
+              <span class="arena-field__label">DQN weights</span>
+              <span class="arena-select-wrap">
+                <select id="arena-left-model" class="arena-select" aria-label="Left DQN weights">
+                  <option value="dqn_cnn_n3_1.pt">CNN</option>
+                  <option value="dqn_2_1.pt">MLP</option>
+                </select>
+              </span>
+            </div>
+          </fieldset>
+          <fieldset class="arena-card arena-card--right">
+            <legend class="arena-card__legend">Right lane</legend>
+            <label class="arena-field">
+              <span class="arena-field__label">Strategy</span>
+              <span class="arena-select-wrap">
+                <select id="arena-right" class="arena-select" aria-label="Right lane strategy"></select>
+              </span>
+            </label>
+            <div id="arena-right-model-wrap" class="arena-field arena-model-wrap hidden">
+              <span class="arena-field__label">DQN weights</span>
+              <span class="arena-select-wrap">
+                <select id="arena-right-model" class="arena-select" aria-label="Right DQN weights">
+                  <option value="dqn_cnn_n3_1.pt">CNN</option>
+                  <option value="dqn_2_1.pt">MLP</option>
+                </select>
+              </span>
+            </div>
+          </fieldset>
+        </div>
+
+        <div class="arena-run-row">
+          <label class="arena-field arena-field--inline">
+            <span class="arena-field__label">Seed</span>
+            <input
+              id="arena-seed"
+              class="arena-input"
+              type="text"
+              inputmode="numeric"
+              placeholder="random"
+              autocomplete="off"
+            />
           </label>
-          <label class="seed"
-            >Right
-            <select id="arena-right"></select>
-          </label>
-          <label class="seed"
-            >L ckpt
-            <input id="arena-left-ckpt" list="checkpoint-list" type="text" placeholder="dqn.pt" />
-          </label>
-          <label class="seed"
-            >R ckpt
-            <input id="arena-right-ckpt" list="checkpoint-list" type="text" placeholder="dqn.pt" />
-          </label>
-          <label class="seed"
-            >Seed
-            <input id="arena-seed" type="text" inputmode="numeric" placeholder="random" />
-          </label>
-          <button id="arena-start" type="button">Start arena</button>
+          <button type="button" id="arena-start" class="arena-start-btn">Start arena</button>
         </div>
 
         <div class="hud">
@@ -153,33 +189,77 @@
           <div class="stat toast" id="toast-arena" aria-live="polite"></div>
         </div>
 
+        <div id="arena-score-tracker" class="arena-score-tracker" aria-label="Live board stats">
+          <div class="arena-score-tracker__lane arena-score-tracker__lane--left">
+            <span class="arena-score-tracker__title">Left</span>
+            <div class="arena-score-tracker__pills">
+              <span class="arena-score-pill">Max <strong id="arena-score-left-max">—</strong></span>
+              <span class="arena-score-pill">Σ <strong id="arena-score-left-sum">—</strong></span>
+            </div>
+          </div>
+          <div class="arena-score-tracker__lane arena-score-tracker__lane--right">
+            <span class="arena-score-tracker__title">Right</span>
+            <div class="arena-score-tracker__pills">
+              <span class="arena-score-pill">Max <strong id="arena-score-right-max">—</strong></span>
+              <span class="arena-score-pill">Σ <strong id="arena-score-right-sum">—</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <p class="help-text">
+          Winner is decided by <strong>highest max tile</strong>, then <strong>highest sum of all tiles</strong>.
+          The lane that runs out of moves first shows <strong>LOSE</strong> (red); when both are finished, the lane
+          with the better board shows <strong>WIN</strong> (green). DQN weights resolve from
+          <code>checkpoints/</code>, then <code>CNN/checkpoints/</code> or <code>MLP/checkpoints/</code>.
+        </p>
+
         <div class="arena-actions">
           <button type="button" id="arena-tick-left">Step left</button>
           <button type="button" id="arena-tick-right">Step right</button>
           <button type="button" id="arena-tick-both">Step both</button>
-          <button type="button" id="arena-auto">Auto until Win</button>
+          <button type="button" id="arena-auto">Auto both bots</button>
         </div>
         <p class="arena-auto-hint">
-          Runs both bots each turn until someone reaches the 2048 tile or both boards are stuck.
-          Click the button again to stop early.
+          Auto runs both bots each tick until <strong>both</strong> boards are stuck (or you press Stop). Winner
+          uses max tile, then total tile sum — not “first to 2048”.
         </p>
 
         <div class="duel-row">
           <div class="duel-pane">
             <h2 class="pane-title" id="arena-left-title">Left</h2>
-            <div class="board-wrap duel-board" id="board-wrap-arena-l">
+            <div class="board-wrap duel-board board-wrap--overlay" id="board-wrap-arena-l">
               <div id="grid-arena-l" class="grid"></div>
+              <div
+                id="arena-overlay-left"
+                class="pane-overlay pane-overlay--hidden"
+                aria-hidden="true"
+              >
+                <div class="pane-overlay__inner">
+                  <span class="pane-overlay__word"></span>
+                  <span class="pane-overlay__sub"></span>
+                </div>
+              </div>
             </div>
           </div>
           <div class="duel-pane">
             <h2 class="pane-title" id="arena-right-title">Right</h2>
-            <div class="board-wrap duel-board" id="board-wrap-arena-r">
+            <div class="board-wrap duel-board board-wrap--overlay" id="board-wrap-arena-r">
               <div id="grid-arena-r" class="grid"></div>
+              <div
+                id="arena-overlay-right"
+                class="pane-overlay pane-overlay--hidden"
+                aria-hidden="true"
+              >
+                <div class="pane-overlay__inner">
+                  <span class="pane-overlay__word"></span>
+                  <span class="pane-overlay__sub"></span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
       </section>
     </div>
-    <script src="/static/game.js"></script>
+    <script src="/static/game.js?v=5"></script>
   </body>
 </html>

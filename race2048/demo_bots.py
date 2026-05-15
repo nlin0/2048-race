@@ -9,10 +9,10 @@ import torch
 
 from race2048.agents.baselines import GreedyEmptyAgent, OrderedAgent
 from race2048.board import Game2048
-from race2048.dqn.qnet import QNetwork
+from race2048.dqn.qnet import load_qnetwork_from_checkpoint
 from race2048.env import encode_board_log2
 
-_DQN_NETS: dict[str, QNetwork] = {}
+_DQN_NETS: dict[str, torch.nn.Module] = {}
 
 
 def legal_mask_numpy(game: Game2048) -> np.ndarray:
@@ -29,34 +29,50 @@ def _obs_and_info(game: Game2048) -> tuple[np.ndarray, dict]:
 
 
 def resolve_checkpoint_under(root: Path, rel: str | None, default_filename: str) -> Path | None:
-    """Return *.pt under `<root>/checkpoints/` given a basename-only `rel`; never escapes."""
-    checkpoints = (root / "checkpoints").resolve()
-    checkpoints.mkdir(parents=True, exist_ok=True)
-    name = (rel or default_filename).strip()
-    fname = Path(name).name  # disallow path traversal
-    path = (checkpoints / fname).resolve()
-    if not path.is_file():
-        return None
-    allowed = checkpoints
-    try:
-        path.relative_to(allowed)
-    except ValueError:
-        return None
-    return path
+    """Resolve a basename-only ``*.pt`` for demos and the web UI.
 
-
-def load_qnetwork(path: Path, device: torch.device) -> QNetwork:
-    key = str(path.resolve())
-    if key not in _DQN_NETS:
-        net = QNetwork().to(device)
+    Search order (first hit wins): ``<root>/checkpoints/``, then
+    ``<root>/CNN/checkpoints/``, ``<root>/MLP/checkpoints/`` so presets work when
+    weights only exist under the subproject trees.
+    """
+    fname = Path((rel or default_filename).strip()).name  # disallow path traversal
+    if not fname:
+        return None
+    root_r = root.resolve()
+    primary = (root_r / "checkpoints").resolve()
+    primary.mkdir(parents=True, exist_ok=True)
+    candidates = [
+        primary,
+        (root_r / "CNN" / "checkpoints").resolve(),
+        (root_r / "MLP" / "checkpoints").resolve(),
+    ]
+    seen: set[Path] = set()
+    for base in candidates:
+        if base in seen:
+            continue
+        seen.add(base)
+        if not base.is_dir():
+            continue
+        path = (base / fname).resolve()
+        if not path.is_file():
+            continue
         try:
-            ckpt = torch.load(key, map_location=device, weights_only=False)
+            path.relative_to(base)
+        except ValueError:
+            continue
+        return path
+    return None
+
+
+def load_qnetwork(path: Path, device: torch.device) -> torch.nn.Module:
+    path = path.resolve()
+    key = f"{path}:{path.stat().st_mtime_ns}"
+    if key not in _DQN_NETS:
+        try:
+            ckpt = torch.load(str(path), map_location=device, weights_only=False)
         except TypeError:
-            ckpt = torch.load(key, map_location=device)
-        sd = ckpt["policy_state"] if isinstance(ckpt, dict) else ckpt
-        net.load_state_dict(sd)
-        net.eval()
-        _DQN_NETS[key] = net
+            ckpt = torch.load(str(path), map_location=device)
+        _DQN_NETS[key] = load_qnetwork_from_checkpoint(ckpt, device)
     return _DQN_NETS[key]
 
 

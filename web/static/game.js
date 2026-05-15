@@ -17,6 +17,9 @@
   let duel = null;
   /** @type {{ matchId: string, leftId: string, rightId: string } | null} */
   let arena = null;
+  /** Latest full-step snapshots for partial ticks (e.g. step left only). */
+  /** @type {{ left: any, right: any } | null} */
+  let arenaStepCache = null;
 
   /** Arena: auto-play both bots until a win or both stuck. */
   let arenaAutoActive = false;
@@ -142,21 +145,190 @@
     return "Playing (" + snap.legal_actions.length + " legal moves)";
   }
 
-  async function loadCheckpointList() {
-    try {
-      const res = await fetch("/api/checkpoints");
-      if (!res.ok) return;
-      const data = await res.json();
-      const dl = document.getElementById("checkpoint-list");
-      if (!dl) return;
-      dl.innerHTML = "";
-      for (const name of data.checkpoints || []) {
-        const o = document.createElement("option");
-        o.value = name;
-        dl.appendChild(o);
+  function boardMaxTile(board) {
+    let m = 0;
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 4; c++) {
+        const v = board[r][c];
+        if (v > m) m = v;
       }
-    } catch {
-      /* offline */
+    }
+    return m;
+  }
+
+  function boardSum(board) {
+    let s = 0;
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 4; c++) s += board[r][c];
+    }
+    return s;
+  }
+
+  /** @param {{ board: number[][], game_over: boolean, won: boolean, legal_actions: string[] }} step */
+  function formatArenaStatusOnly(step) {
+    if (!step) return "…";
+    if (step.won) return "Has 2048 tile";
+    if (step.game_over) return "No legal moves";
+    return "Playing · " + step.legal_actions.length + " moves";
+  }
+
+  function resetArenaScoreTrackerDisplay() {
+    for (const id of [
+      "arena-score-left-max",
+      "arena-score-left-sum",
+      "arena-score-right-max",
+      "arena-score-right-sum",
+    ]) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = "—";
+    }
+  }
+
+  /**
+   * @param {{ board: number[][] } | null} leftStep
+   * @param {{ board: number[][] } | null} rightStep
+   */
+  function updateArenaScoreTracker(leftStep, rightStep) {
+    function set(prefix, step) {
+      const maxEl = document.getElementById("arena-score-" + prefix + "-max");
+      const sumEl = document.getElementById("arena-score-" + prefix + "-sum");
+      if (!maxEl || !sumEl || !step || !step.board) return;
+      maxEl.textContent = String(boardMaxTile(step.board));
+      sumEl.textContent = String(boardSum(step.board));
+    }
+    set("left", leftStep);
+    set("right", rightStep);
+  }
+
+  /** @param {any} pack */
+  function syncArenaStepCacheFromPack(pack) {
+    if (!arena) return;
+    const steps = pack.steps || {};
+    if (!arenaStepCache) arenaStepCache = { left: null, right: null };
+    if (steps.left) arenaStepCache.left = steps.left;
+    if (steps.right) arenaStepCache.right = steps.right;
+    if (arenaStepCache.left && arenaStepCache.right) {
+      updateArenaScoreTracker(arenaStepCache.left, arenaStepCache.right);
+      maybeUpdateArenaOutcomeOverlays(arenaStepCache.left, arenaStepCache.right);
+    }
+  }
+
+  function compareArenaSides(leftBoard, rightBoard) {
+    const ml = boardMaxTile(leftBoard);
+    const mr = boardMaxTile(rightBoard);
+    if (ml !== mr) return ml > mr ? -1 : 1;
+    const sl = boardSum(leftBoard);
+    const sr = boardSum(rightBoard);
+    if (sl !== sr) return sl > sr ? -1 : 1;
+    return 0;
+  }
+
+  const ARENA_OVERLAY_IDS = { left: "arena-overlay-left", right: "arena-overlay-right" };
+
+  function resetArenaPaneOverlay(side) {
+    const id = ARENA_OVERLAY_IDS[side];
+    const el = id ? document.getElementById(id) : null;
+    if (!el) return;
+    el.classList.add("pane-overlay--hidden");
+    el.classList.remove(
+      "pane-overlay--win",
+      "pane-overlay--lose",
+      "pane-overlay--tie",
+      "pane-overlay--lose-first",
+      "pane-overlay--word-only"
+    );
+    const word = el.querySelector(".pane-overlay__word");
+    const sub = el.querySelector(".pane-overlay__sub");
+    if (word) word.textContent = "";
+    if (sub) sub.textContent = "";
+    el.setAttribute("aria-hidden", "true");
+  }
+
+  function clearArenaOverlays() {
+    resetArenaPaneOverlay("left");
+    resetArenaPaneOverlay("right");
+  }
+
+  /**
+   * @param {"left" | "right"} side
+   * @param {"hidden" | "win" | "lose" | "tie" | "lose-first"} kind
+   */
+  function showArenaPaneOverlay(side, kind) {
+    if (kind === "hidden") {
+      resetArenaPaneOverlay(side);
+      return;
+    }
+    const el = document.getElementById(ARENA_OVERLAY_IDS[side]);
+    if (!el) return;
+    resetArenaPaneOverlay(side);
+    el.classList.remove("pane-overlay--hidden");
+    if (kind === "win") el.classList.add("pane-overlay--win");
+    else if (kind === "tie") el.classList.add("pane-overlay--tie");
+    else if (kind === "lose-first") el.classList.add("pane-overlay--lose-first");
+    else el.classList.add("pane-overlay--lose");
+    const wordOnly = kind === "win" || kind === "lose" || kind === "lose-first" || kind === "tie";
+    el.classList.toggle("pane-overlay--word-only", wordOnly);
+    const word = el.querySelector(".pane-overlay__word");
+    const sub = el.querySelector(".pane-overlay__sub");
+    if (!word || !sub) return;
+    el.setAttribute("aria-hidden", "false");
+    if (kind === "win") {
+      word.textContent = "WIN";
+      sub.textContent = "";
+    } else if (kind === "tie") {
+      word.textContent = "TIE";
+      sub.textContent = "";
+    } else if (kind === "lose-first") {
+      word.textContent = "LOSE";
+      sub.textContent = "";
+    } else {
+      word.textContent = "LOSE";
+      sub.textContent = "";
+    }
+  }
+
+  /**
+   * @param {{ board: number[][], game_over: boolean, won: boolean }} sl
+   * @param {{ board: number[][], game_over: boolean, won: boolean }} sr
+   */
+  function finalizeArenaScoreOverlays(sl, sr) {
+    if (!arena || arena.scoreFinalized || !sl.board || !sr.board) return;
+    const cmp = compareArenaSides(sl.board, sr.board);
+    resetArenaPaneOverlay("left");
+    resetArenaPaneOverlay("right");
+    if (cmp < 0) {
+      showArenaPaneOverlay("left", "win");
+      showArenaPaneOverlay("right", "lose");
+      toastArena.textContent = "Left wins — higher max tile (then higher sum of tiles).";
+    } else if (cmp > 0) {
+      showArenaPaneOverlay("right", "win");
+      showArenaPaneOverlay("left", "lose");
+      toastArena.textContent = "Right wins — higher max tile (then higher sum of tiles).";
+    } else {
+      showArenaPaneOverlay("left", "tie");
+      showArenaPaneOverlay("right", "tie");
+      toastArena.textContent = "Draw — same max tile and tile sum.";
+    }
+    arena.scoreFinalized = true;
+  }
+
+  /**
+   * @param {{ board: number[][], game_over: boolean, won: boolean }} sl
+   * @param {{ board: number[][], game_over: boolean, won: boolean }} sr
+   */
+  function maybeUpdateArenaOutcomeOverlays(sl, sr) {
+    if (!arena || !sl || !sr) return;
+    if (sl.game_over && sr.game_over) {
+      finalizeArenaScoreOverlays(sl, sr);
+      return;
+    }
+    if (arena.scoreFinalized) return;
+    if (sl.game_over && !sr.game_over) {
+      if (arena.firstStuck == null) arena.firstStuck = "left";
+      showArenaPaneOverlay("left", "lose-first");
+    } else if (!sl.game_over && sr.game_over) {
+      if (arena.firstStuck == null) arena.firstStuck = "right";
+      showArenaPaneOverlay("right", "lose-first");
     }
   }
 
@@ -166,11 +338,15 @@
     sectionVersus.classList.toggle("hidden", m !== "versus");
     sectionArena.classList.toggle("hidden", m !== "arena");
     page.classList.toggle("page--wide", m === "versus" || m === "arena");
+    if (m !== "arena") {
+      arenaStepCache = null;
+      resetArenaScoreTrackerDisplay();
+    }
   }
 
   function arenaAutoResetBtn() {
     const btn = document.getElementById("arena-auto");
-    if (btn) btn.textContent = "Auto until 2048";
+    if (btn) btn.textContent = "Auto both bots";
   }
 
   function stopArenaAuto() {
@@ -273,8 +449,18 @@
   const statusYou = document.getElementById("status-versus-you");
   const statusBot = document.getElementById("status-versus-bot");
   const versusOppSel = document.getElementById("versus-opponent");
-  const versusCkpt = document.getElementById("versus-checkpoint");
+  const versusDqnModel = document.getElementById("versus-dqn-model");
+  const versusModelWrap = document.getElementById("versus-model-wrap");
   const versusSeed = document.getElementById("versus-seed");
+
+  function syncVersusDqnModelUI() {
+    if (!versusModelWrap) return;
+    const show = versusOppSel.value === "dqn";
+    versusModelWrap.classList.toggle("hidden", !show);
+  }
+  versusOppSel.addEventListener("change", syncVersusDqnModelUI);
+  syncVersusDqnModelUI();
+
   document.getElementById("versus-start").addEventListener("click", startVersus);
   document.getElementById("versus-step-bot-only").addEventListener("click", () => opponentTurn());
 
@@ -287,7 +473,7 @@
   async function startVersus() {
     toastVersus.textContent = "";
     const opponent = versusOppSel.value;
-    const ck = versusCkpt.value.trim() || null;
+    const ck = opponent === "dqn" && versusDqnModel ? versusDqnModel.value : null;
     const raw = versusSeed.value.trim();
     const body = { mode: "versus", opponent, checkpoint: ck };
     if (raw !== "") {
@@ -305,13 +491,21 @@
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      toastVersus.textContent = err.detail || "Could not start duel (DQN needs checkpoints/*.pt).";
+      toastVersus.textContent = err.detail || "Could not start duel (DQN needs a .pt under checkpoints/).";
       return;
     }
     const d = await res.json();
-    duel = { matchId: d.match_id, playerId: d.left_game_id, botId: d.right_game_id };
-    document.getElementById("versus-bot-title").textContent =
-      opponent === "dqn" ? "DQN bot" : opponent + " bot";
+    duel = {
+      matchId: d.match_id ?? d.matchId,
+      playerId: d.left_game_id ?? d.leftGameId,
+      botId: d.right_game_id ?? d.rightGameId,
+    };
+    if (opponent === "dqn" && versusDqnModel) {
+      const label = versusDqnModel.options[versusDqnModel.selectedIndex].text;
+      document.getElementById("versus-bot-title").textContent = label + " (DQN)";
+    } else {
+      document.getElementById("versus-bot-title").textContent = opponent + " bot";
+    }
 
     versusYou.lastBoard = null;
     versusBot.lastBoard = null;
@@ -327,17 +521,22 @@
       toastVersus.textContent = "Start a duel first.";
       return;
     }
-    const prev = versusYou.lastBoard ? cloneBoard(versusYou.lastBoard) : null;
-    const res = await fetch("/api/games/" + encodeURIComponent(duel.playerId) + "/step", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
-    });
+    const res = await fetch(
+      "/api/matches/" + encodeURIComponent(duel.matchId) + "/versus-step",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      }
+    );
     if (!res.ok) {
-      toastVersus.textContent = "Move failed.";
+      const err = await res.json().catch(() => ({}));
+      toastVersus.textContent =
+        (typeof err.detail === "string" ? err.detail : null) || "Move failed.";
       return;
     }
-    const data = await res.json();
+    const pack = await res.json();
+    const data = pack.player;
     if (!data.valid) {
       shakeWrap(versusYou.wrap);
       statusYou.textContent = formatStatus(data);
@@ -345,26 +544,27 @@
     }
     renderInto(versusYou, data.board, { animate: true });
     statusYou.textContent = formatStatus(data);
-    await opponentTurn();
+    if (pack.opponent) {
+      renderInto(versusBot, pack.opponent.board, { animate: true });
+      statusBot.textContent = formatStatus(pack.opponent);
+    }
   }
 
   async function opponentTurn() {
     if (!duel) return;
-    const prevB = versusBot.lastBoard ? cloneBoard(versusBot.lastBoard) : null;
     const res = await fetch(
-      "/api/matches/" + encodeURIComponent(duel.match_id) + "/opponent-turn",
+      "/api/matches/" + encodeURIComponent(duel.matchId) + "/opponent-turn",
       { method: "POST" }
     );
     if (!res.ok) {
-      toastVersus.textContent = "Bot step failed.";
+      const err = await res.json().catch(() => ({}));
+      toastVersus.textContent =
+        (typeof err.detail === "string" ? err.detail : null) || "Bot step failed.";
       return;
     }
     const data = await res.json();
     renderInto(versusBot, data.board, { animate: true });
     statusBot.textContent = formatStatus(data);
-    if (!data.valid && prevB) {
-      /* bot board unchanged (e.g. already terminal) */
-    }
   }
 
   document.querySelectorAll("#dpad-you .dir").forEach((btn) => {
@@ -384,7 +584,23 @@
     arenaLeft.appendChild(new Option(l, v));
     arenaRight.appendChild(new Option(l, v));
   }
-  arenaRight.selectedIndex = 1;
+  const arenaLeftModel = document.getElementById("arena-left-model");
+  const arenaRightModel = document.getElementById("arena-right-model");
+
+  function syncArenaModelControls() {
+    const lw = document.getElementById("arena-left-model-wrap");
+    const rw = document.getElementById("arena-right-model-wrap");
+    if (lw) lw.classList.toggle("hidden", arenaLeft.value !== "dqn");
+    if (rw) rw.classList.toggle("hidden", arenaRight.value !== "dqn");
+  }
+  arenaLeft.addEventListener("change", syncArenaModelControls);
+  arenaRight.addEventListener("change", syncArenaModelControls);
+
+  arenaLeft.value = "dqn";
+  arenaRight.value = "dqn";
+  if (arenaLeftModel) arenaLeftModel.selectedIndex = 0;
+  if (arenaRightModel) arenaRightModel.selectedIndex = 1;
+  syncArenaModelControls();
 
   document.getElementById("arena-start").addEventListener("click", startArena);
   document.getElementById("arena-tick-left").addEventListener("click", () => arenaTick(["left"]));
@@ -407,12 +623,13 @@
     const steps = pack.steps || {};
     if (steps.left) {
       renderInto(arenaL, steps.left.board, { animate });
-      document.getElementById("status-arena-left").textContent = formatStatus(steps.left);
+      document.getElementById("status-arena-left").textContent = formatArenaStatusOnly(steps.left);
     }
     if (steps.right) {
       renderInto(arenaR, steps.right.board, { animate });
-      document.getElementById("status-arena-right").textContent = formatStatus(steps.right);
+      document.getElementById("status-arena-right").textContent = formatArenaStatusOnly(steps.right);
     }
+    syncArenaStepCacheFromPack(pack);
   }
 
   async function arenaTickPayload(lanes) {
@@ -432,15 +649,13 @@
   async function startArena() {
     stopArenaAuto();
     toastArena.textContent = "";
+    arenaStepCache = null;
+    resetArenaScoreTrackerDisplay();
     const left = arenaLeft.value;
     const right = arenaRight.value;
-    const body = {
-      mode: "arena",
-      left,
-      right,
-      left_checkpoint: document.getElementById("arena-left-ckpt").value.trim() || null,
-      right_checkpoint: document.getElementById("arena-right-ckpt").value.trim() || null,
-    };
+    const body = { mode: "arena", left, right };
+    if (left === "dqn" && arenaLeftModel) body.left_checkpoint = arenaLeftModel.value;
+    if (right === "dqn" && arenaRightModel) body.right_checkpoint = arenaRightModel.value;
     const raw = document.getElementById("arena-seed").value.trim();
     if (raw !== "") {
       const s = Number.parseInt(raw, 10);
@@ -461,19 +676,33 @@
       return;
     }
     const d = await res.json();
-    arena = { matchId: d.match_id, leftId: d.left_game_id, rightId: d.right_game_id };
-    document.getElementById("arena-left-title").textContent =
-      arenaLeft.options[arenaLeft.selectedIndex].text;
-    document.getElementById("arena-right-title").textContent =
-      arenaRight.options[arenaRight.selectedIndex].text;
+    arena = {
+      matchId: d.match_id,
+      leftId: d.left_game_id,
+      rightId: d.right_game_id,
+      firstStuck: null,
+      scoreFinalized: false,
+    };
+    clearArenaOverlays();
+    function arenaSideTitle(policySel, modelSel) {
+      if (policySel.value === "dqn" && modelSel) {
+        return modelSel.options[modelSel.selectedIndex].text + " (DQN)";
+      }
+      return policySel.options[policySel.selectedIndex].text;
+    }
+    document.getElementById("arena-left-title").textContent = arenaSideTitle(arenaLeft, arenaLeftModel);
+    document.getElementById("arena-right-title").textContent = arenaSideTitle(arenaRight, arenaRightModel);
 
     arenaL.lastBoard = null;
     arenaR.lastBoard = null;
     const [sl, sr] = await Promise.all([fetchSnap(arena.leftId), fetchSnap(arena.rightId)]);
     renderInto(arenaL, sl.board, { animate: false });
     renderInto(arenaR, sr.board, { animate: false });
-    document.getElementById("status-arena-left").textContent = formatStatus(sl);
-    document.getElementById("status-arena-right").textContent = formatStatus(sr);
+    arenaStepCache = { left: sl, right: sr };
+    updateArenaScoreTracker(sl, sr);
+    document.getElementById("status-arena-left").textContent = formatArenaStatusOnly(sl);
+    document.getElementById("status-arena-right").textContent = formatArenaStatusOnly(sr);
+    maybeUpdateArenaOutcomeOverlays(sl, sr);
   }
 
   async function arenaTick(lanes) {
@@ -521,19 +750,7 @@
           break;
         }
 
-        if (sl.won || sr.won) {
-          if (sl.won && sr.won) {
-            toastArena.textContent = "Both reached 2048 this step.";
-          } else if (sl.won) {
-            toastArena.textContent = "Left wins — reached 2048.";
-          } else {
-            toastArena.textContent = "Right wins — reached 2048.";
-          }
-          break;
-        }
         if (sl.game_over && sr.game_over) {
-          toastArena.textContent =
-            "Stopped — neither bot reached 2048; both boards are stuck.";
           break;
         }
 
@@ -542,12 +759,16 @@
       if (
         arenaAutoActive &&
         toastArena.textContent === "" &&
-        arena
+        arena &&
+        !arena.scoreFinalized
       ) {
         toastArena.textContent =
           "Stopped — safety step limit reached (reload or adjust code if needed).";
       }
     } finally {
+      if (arena && !arena.scoreFinalized && toastArena.textContent === "") {
+        toastArena.textContent = "Stopped early — run auto until both boards are stuck to pick a winner.";
+      }
       stopArenaAuto();
     }
   }
@@ -572,6 +793,5 @@
 
   document.addEventListener("keydown", onKey, { passive: false });
 
-  loadCheckpointList();
   soloBootstrap();
 })();

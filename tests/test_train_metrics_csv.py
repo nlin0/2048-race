@@ -85,3 +85,24 @@ def test_train_writes_metrics_csv(tmp_path: Path) -> None:
     assert csv_path.is_file()
     lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) >= 2
+
+
+def test_train_writes_greedy_eval_metrics(tmp_path: Path) -> None:
+    csv_path = tmp_path / "run_eval.csv"
+    train(
+        total_env_steps=220,
+        learning_starts=20,
+        batch_size=16,
+        buffer_size=2_000,
+        train_frequency=1,
+        env_seed=0,
+        log_every_episodes=0,
+        log_every_env_steps=None,
+        metrics_csv=csv_path,
+        greedy_eval_every_env_steps=100,
+        greedy_eval_episodes=4,
+        greedy_eval_seed=123,
+        eps_decay_steps=10_000,
+    )
+    text = csv_path.read_text(encoding="utf-8")
+    assert "greedy_eval" in text
