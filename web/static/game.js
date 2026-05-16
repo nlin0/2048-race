@@ -21,7 +21,7 @@
   /** @type {{ left: any, right: any } | null} */
   let arenaStepCache = null;
 
-  /** Arena: auto-play both bots until a win or both stuck. */
+  /** Arena: auto-play both bots until a 2048 race winner or both stuck. */
   let arenaAutoActive = false;
 
   let soloToastTimer = 0;
@@ -200,11 +200,30 @@
     set("right", rightStep);
   }
 
+  /**
+   * Order valid moves globally (left before right when both step in one tick) so
+   * "first to 2048" matches server / UI step order.
+   * @param {{ left?: any, right?: any }} steps
+   */
+  function arenaApplyStepsWinTracking(steps) {
+    if (!arena || arena.scoreFinalized) return;
+    const order = [];
+    if (steps.left) order.push(["left", steps.left]);
+    if (steps.right) order.push(["right", steps.right]);
+    for (const [side, st] of order) {
+      if (!st || !st.valid) continue;
+      arena.globalHalfStep += 1;
+      const key = side === "left" ? "leftFirst2048Seq" : "rightFirst2048Seq";
+      if (st.won && arena[key] == null) arena[key] = arena.globalHalfStep;
+    }
+  }
+
   /** @param {any} pack */
   function syncArenaStepCacheFromPack(pack) {
     if (!arena) return;
     const steps = pack.steps || {};
     if (!arenaStepCache) arenaStepCache = { left: null, right: null };
+    arenaApplyStepsWinTracking(steps);
     if (steps.left) arenaStepCache.left = steps.left;
     if (steps.right) arenaStepCache.right = steps.right;
     if (arenaStepCache.left && arenaStepCache.right) {
@@ -287,11 +306,58 @@
     }
   }
 
+  /** @param {"left" | "right" | "tie"} winner */
+  function showArenaWinnerPair(winner) {
+    resetArenaPaneOverlay("left");
+    resetArenaPaneOverlay("right");
+    if (winner === "left") {
+      showArenaPaneOverlay("left", "win");
+      showArenaPaneOverlay("right", "lose");
+    } else if (winner === "right") {
+      showArenaPaneOverlay("right", "win");
+      showArenaPaneOverlay("left", "lose");
+    } else {
+      showArenaPaneOverlay("left", "tie");
+      showArenaPaneOverlay("right", "tie");
+    }
+  }
+
+  function finalizeArenaBy2048Race() {
+    if (!arena || arena.scoreFinalized) return;
+    const lS = arena.leftFirst2048Seq;
+    const rS = arena.rightFirst2048Seq;
+    if (lS == null && rS == null) return;
+    let winner;
+    let msg;
+    if (lS != null && rS != null) {
+      if (lS < rS) {
+        winner = "left";
+        msg = "Left wins — reached 2048 first.";
+      } else if (rS < lS) {
+        winner = "right";
+        msg = "Right wins — reached 2048 first.";
+      } else {
+        winner = "tie";
+        msg = "Tie — both reached 2048 on the same global move index.";
+      }
+    } else if (lS != null) {
+      winner = "left";
+      msg = "Left wins — reached 2048.";
+    } else {
+      winner = "right";
+      msg = "Right wins — reached 2048.";
+    }
+    showArenaWinnerPair(winner);
+    toastArena.textContent = msg;
+    arena.scoreFinalized = true;
+  }
+
   /**
+   * Neither lane reached 2048; both boards are dead — compare max tile then sum.
    * @param {{ board: number[][], game_over: boolean, won: boolean }} sl
    * @param {{ board: number[][], game_over: boolean, won: boolean }} sr
    */
-  function finalizeArenaScoreOverlays(sl, sr) {
+  function finalizeArenaByStalemate(sl, sr) {
     if (!arena || arena.scoreFinalized || !sl.board || !sr.board) return;
     const cmp = compareArenaSides(sl.board, sr.board);
     resetArenaPaneOverlay("left");
@@ -318,11 +384,15 @@
    */
   function maybeUpdateArenaOutcomeOverlays(sl, sr) {
     if (!arena || !sl || !sr) return;
-    if (sl.game_over && sr.game_over) {
-      finalizeArenaScoreOverlays(sl, sr);
+    if (arena.scoreFinalized) return;
+    if (arena.leftFirst2048Seq != null || arena.rightFirst2048Seq != null) {
+      finalizeArenaBy2048Race();
       return;
     }
-    if (arena.scoreFinalized) return;
+    if (sl.game_over && sr.game_over) {
+      finalizeArenaByStalemate(sl, sr);
+      return;
+    }
     if (sl.game_over && !sr.game_over) {
       if (arena.firstStuck == null) arena.firstStuck = "left";
       showArenaPaneOverlay("left", "lose-first");
@@ -499,6 +569,10 @@
       matchId: d.match_id ?? d.matchId,
       playerId: d.left_game_id ?? d.leftGameId,
       botId: d.right_game_id ?? d.rightGameId,
+      globalHalfStep: 0,
+      youFirst2048Seq: null,
+      botFirst2048Seq: null,
+      raceToastShown: false,
     };
     if (opponent === "dqn" && versusDqnModel) {
       const label = versusDqnModel.options[versusDqnModel.selectedIndex].text;
@@ -514,6 +588,23 @@
     renderInto(versusBot, sb.board, { animate: false });
     statusYou.textContent = formatStatus(sy);
     statusBot.textContent = formatStatus(sb);
+  }
+
+  function maybeVersusRaceToast() {
+    if (!duel || duel.raceToastShown) return;
+    const y = duel.youFirst2048Seq;
+    const b = duel.botFirst2048Seq;
+    if (y == null && b == null) return;
+    duel.raceToastShown = true;
+    if (y != null && b != null) {
+      if (y < b) toastVersus.textContent = "You win the race — you reached 2048 first.";
+      else if (b < y) toastVersus.textContent = "Bot wins the race — reached 2048 before you.";
+      else toastVersus.textContent = "Tie — both reached 2048 on the same exchange.";
+    } else if (y != null) {
+      toastVersus.textContent = "You win the race — you reached 2048.";
+    } else {
+      toastVersus.textContent = "Bot wins the race — reached 2048.";
+    }
   }
 
   async function versusPlayerStep(action) {
@@ -537,6 +628,15 @@
     }
     const pack = await res.json();
     const data = pack.player;
+    if (data.valid) {
+      duel.globalHalfStep += 1;
+      if (data.won && duel.youFirst2048Seq == null) duel.youFirst2048Seq = duel.globalHalfStep;
+    }
+    if (pack.opponent && pack.opponent.valid) {
+      duel.globalHalfStep += 1;
+      if (pack.opponent.won && duel.botFirst2048Seq == null) duel.botFirst2048Seq = duel.globalHalfStep;
+    }
+    maybeVersusRaceToast();
     if (!data.valid) {
       shakeWrap(versusYou.wrap);
       statusYou.textContent = formatStatus(data);
@@ -563,6 +663,11 @@
       return;
     }
     const data = await res.json();
+    if (data.valid) {
+      duel.globalHalfStep += 1;
+      if (data.won && duel.botFirst2048Seq == null) duel.botFirst2048Seq = duel.globalHalfStep;
+    }
+    maybeVersusRaceToast();
     renderInto(versusBot, data.board, { animate: true });
     statusBot.textContent = formatStatus(data);
   }
@@ -682,6 +787,9 @@
       rightId: d.right_game_id,
       firstStuck: null,
       scoreFinalized: false,
+      globalHalfStep: 0,
+      leftFirst2048Seq: null,
+      rightFirst2048Seq: null,
     };
     clearArenaOverlays();
     function arenaSideTitle(policySel, modelSel) {
@@ -750,6 +858,9 @@
           break;
         }
 
+        if (arena.scoreFinalized) {
+          break;
+        }
         if (sl.game_over && sr.game_over) {
           break;
         }
@@ -767,7 +878,8 @@
       }
     } finally {
       if (arena && !arena.scoreFinalized && toastArena.textContent === "") {
-        toastArena.textContent = "Stopped early — run auto until both boards are stuck to pick a winner.";
+        toastArena.textContent =
+          "Stopped early — run auto until the race finishes (2048 or both boards stuck).";
       }
       stopArenaAuto();
     }
