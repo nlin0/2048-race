@@ -12,7 +12,6 @@
       <header class="header">
         <div>
           <h1>2048 RACE!</h1>
-          <p class="tagline">Human play · duel a bot · arena two bots · Python backend</p>
         </div>
         <div class="toolbar">
           <label class="mode-label"
@@ -90,7 +89,8 @@
           <button id="versus-start" type="button">Start duel</button>
         </div>
         <p class="help-text">
-          After each of your valid moves, the bot replies once (parallel boards).
+          After each of your valid moves, the bot replies once (parallel boards). First side to create a
+          <strong>2048</strong> tile wins the race; if both do, whoever does so first wins.
           <strong>Random</strong>, <strong>ordered</strong>, and <strong>greedy</strong> need no weight file.
           For <strong>DQN</strong>, pick <strong>CNN</strong> or <strong>MLP</strong>; weights resolve from
           <code>checkpoints/</code>, then <code>CNN/checkpoints/</code> or <code>MLP/checkpoints/</code>.
@@ -206,12 +206,6 @@
           </div>
         </div>
 
-        <p class="help-text">
-          Winner is decided by <strong>highest max tile</strong>, then <strong>highest sum of all tiles</strong>.
-          The lane that runs out of moves first shows <strong>LOSE</strong> (red); when both are finished, the lane
-          with the better board shows <strong>WIN</strong> (green). DQN weights resolve from
-          <code>checkpoints/</code>, then <code>CNN/checkpoints/</code> or <code>MLP/checkpoints/</code>.
-        </p>
 
         <div class="arena-actions">
           <button type="button" id="arena-tick-left">Step left</button>
@@ -219,10 +213,6 @@
           <button type="button" id="arena-tick-both">Step both</button>
           <button type="button" id="arena-auto">Auto both bots</button>
         </div>
-        <p class="arena-auto-hint">
-          Auto runs both bots each tick until <strong>both</strong> boards are stuck (or you press Stop). Winner
-          uses max tile, then total tile sum — not “first to 2048”.
-        </p>
 
         <div class="duel-row">
           <div class="duel-pane">
@@ -260,6 +250,6 @@
         </div>
       </section>
     </div>
-    <script src="/static/game.js?v=5"></script>
+    <script src="/static/game.js?v=6"></script>
   </body>
 </html>
