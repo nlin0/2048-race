@@ -153,6 +153,10 @@ def main() -> None:
             "median_moves_to_2048": stats.median_moves_to_2048,
             "mean_valid_moves": stats.mean_valid_moves,
             "mean_max_tile": stats.mean_max_tile,
+            "std_max_tile": stats.std_max_tile,
+            "median_max_tile": stats.median_max_tile,
+            "mean_final_tile_sum": stats.mean_final_tile_sum,
+            "mean_invalid_moves": stats.mean_invalid_moves,
         }
         if args.agent == "dqn":
             payload["checkpoint"] = str(args.checkpoint.resolve())
@@ -171,7 +175,9 @@ def main() -> None:
     else:
         print("Mean moves to 2048:    n/a (never reached in any episode)")
     print(f"Mean valid moves/game: {stats.mean_valid_moves:.1f}")
-    print(f"Mean max tile:         {stats.mean_max_tile:.1f}")
+    print(f"Mean max tile:         {stats.mean_max_tile:.1f}  (std {stats.std_max_tile:.2f}, median {stats.median_max_tile:.0f})")
+    print(f"Mean final tile sum:   {stats.mean_final_tile_sum:.0f}")
+    print(f"Mean invalid moves/ep: {stats.mean_invalid_moves:.2f}")
 
 
 if __name__ == "__main__":
